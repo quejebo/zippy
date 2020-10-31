@@ -10,13 +10,13 @@ from abc import ABCMeta, abstractmethod
 import itertools
 import numpy
 
-from .utils import sub_check_wilds
+from .utils import sub_check_wilds, sub_check_params
 from pyflow import WorkflowRunner
 
-from star import SingleStarFlow
-from bwa import BWAWorkflow
-from samplesheet import SampleSheet, check_valid_samplename
-from bcl2fastq import Bcl2Fastq
+from .star import SingleStarFlow
+from .bwa import BWAWorkflow
+from .samplesheet import SampleSheet, check_valid_samplename
+from .bcl2fastq import Bcl2Fastq
 
 SampleTuple = namedtuple('SampleTuple', ['id', 'name'])
 zippy_dir = os.path.dirname(__file__)
@@ -42,23 +42,21 @@ def organize_fastqs(fastq_files, is_paired_end=True):
     '''
     Helper function used to separate R1/R2 
     '''
-    r1_files = [x for x in fastq_files if '_R1_' in x]
-    r2_files = [x for x in fastq_files if '_R2_' in x]
+    r1_files = [x for x in fastq_files if '_R1_' in os.path.basename(x)]
+    r2_files = [x for x in fastq_files if '_R2_' in os.path.basename(x)]
     if is_paired_end and len(r1_files)>0 and len(r2_files)>0:
         assert not set(r1_files).intersection(set(r2_files))
         return (r1_files, r2_files)
     else:
         return fastq_files
 
-class ModularRunner():
+class ModularRunner(metaclass=ABCMeta):
     '''
     Naming convention: a collect method is called at the front end of a stage to take in data.
     A get method is called at the back end of a stage to give data to the next stage.
     typically, collect methods should never need to be overridden.  Get methods must be changed when
     the stage does something unusual (such as merging or creating samples).
     '''
-    __metaclass__ = ABCMeta
-
     def __init__(self, identifier, params, previous_stages):
         self.identifier = identifier
         self.params = params
@@ -177,8 +175,6 @@ class ModularRunner():
                     results.extend(stage_results)
                 elif isinstance(stage_results, str):
                     results.append(stage_results)
-                elif isinstance(stage_results, unicode):
-                    results.append(str(stage_results))
                 else:
                     raise TypeError('Input for {} received neither a string or list: {}'.format(self.identifier, stage_results))
             except (KeyError,TypeError):
@@ -207,8 +203,6 @@ class ModularRunner():
                 dependencies.extend(new_dependencies)
             elif isinstance(new_dependencies, str):
                 dependencies.append(new_dependencies)
-            elif isinstance(new_dependencies, unicode): #python 2 = derp
-                dependencies.append(str(new_dependencies))
             else:
                 raise TypeError('Dependencies for {} received neither a string or list: {}'.format(self.identifier, new_dependencies))
         return dependencies
@@ -225,7 +219,7 @@ class Bcl2FastQRunner(ModularRunner):
         sample_id_map = {}
         samples = []
         for line in self.sample_sheet.get("Data"):
-            if line.get("Sample_ID") == '' and line.get("Sample_Name") == '':
+            if line.get("Sample_ID") == '' and line.get("Sample_Name", fallback='') == '':
                 continue
             sample  = line.get("Sample_ID") 
             if sample not in sample_id_map:
@@ -243,11 +237,11 @@ class Bcl2FastQRunner(ModularRunner):
         sample_first_instance = {}
         samples_to_return = []
         for line in self.sample_sheet.get("Data"):
-            if line.get("Sample_ID") == '' and line.get("Sample_Name") == '':
+            if line.get("Sample_ID") == '' and line.get("Sample_Name", fallback='') == '':
                 continue
             if sample.id ==  line.get("Sample_ID"):
                 if not sample in sample_first_instance:
-                    sample_first_instance[sample] = line.data_i
+                    sample_first_instance[sample] = line.get("row_idx")
                 else: #if no_lane_splitting=True this is needed
                     continue
                 #if line.has("Lane"): #this is not necessary when no_lane_splitting=True
@@ -260,9 +254,7 @@ class Bcl2FastQRunner(ModularRunner):
                     path=self.params.self.output_dir, sample_name=line.get("Sample_Name"), sample_index=sample_first_instance[sample]))
                 samples_to_return.append("{path}/{sample_name}_S{sample_index}_R2_001.fastq.gz".format(
                     path=self.params.self.output_dir, sample_name=line.get("Sample_Name"), sample_index=sample_first_instance[sample]))
-        print 'z'
-        print samples_to_return
-        print 'z'
+        print(samples_to_return)
         return {'fastq': samples_to_return}
 
     def get_dependencies(self, sample):
@@ -390,16 +382,25 @@ class CommandLineRunner(ModularRunner):
     def get_output(self, sample):
         return {self.params.self.output_format : os.path.join(self.params.self.output_dir, self.create_output_string(sample))}
 
+    def define_optionals(self):
+        return {'merge': False, 'output': ''}
+
+    def get_dependencies(self, sample):
+        if self.params.self.optional.merge:
+            return self.task    
+        else:
+            return super().get_dependencies(sample)
+
     def create_output_string(self, sample):
         sample_dict = {"sample.id": sample.id,
                         "sample.name": sample.name}
-        return sub_check_wilds(sample_dict, self.params.self.output)
+        return os.path.join(self.params.self.output_dir, sub_check_params(self.params, sub_check_wilds(sample_dict, self.params.self.optional.output)))
 
     def create_command_string(self, sample, input_files):
         sample_dict = {"sample.id": sample.id,
                         "sample.name": sample.name,
-                        "self.output": create_output_string(sample)}
-        return sub_check_wilds(sample_dict, self.params.self.command)
+                        "self.output": self.create_output_string(sample)}
+        return sub_check_params(self.params, sub_check_wilds(sample_dict, self.params.self.command))
 
 
     def workflow(self, workflowRunner):
@@ -407,13 +408,24 @@ class CommandLineRunner(ModularRunner):
         if not os.path.exists(self.params.self.output_dir):
             os.makedirs(self.params.self.output_dir)
         cores = self.get_core_count(4) 
-        mem = self.get_memory_count(1024 * 32)           
-        for sample in self.collect_samples():
-            dependencies = self.collect_dependencies(sample)
-            input_files = self.collect_input(sample, self.params.self.input_format)
-            custom_command = create_command_string(sample, input_files)
-            self.task[sample].append(workflowRunner.addTask('{}_{}'.format(self.identifier, sample.id),
-             custom_command, dependencies=dependencies, nCores=cores, memMb=mem))
+        mem = self.get_memory_count(1024 * 32) 
+        if self.params.self.optional.merge:
+            dependencies = []
+            input_files = []
+            for sample in self.collect_samples():
+                dependencies.extend(self.collect_dependencies(sample))
+                input_files.append(self.collect_input(sample, self.params.self.input_format))
+            custom_command = self.create_command_string(SampleTuple('dummy', 'dummy'), input_files)
+            self.task = workflowRunner.addTask('{}'.format(self.identifier),
+                 custom_command, dependencies=dependencies, nCores=cores, memMb=mem)
+        else:
+            self.task = defaultdict(list)
+            for sample in self.collect_samples():
+                dependencies = self.collect_dependencies(sample)
+                input_files = self.collect_input(sample, self.params.self.input_format)
+                custom_command = create_command_string(sample, input_files)
+                self.task[sample].append(workflowRunner.addTask('{}_{}'.format(self.identifier, sample.id),
+                 custom_command, dependencies=dependencies, nCores=cores, memMb=mem))
 
 class SubsampleBAMRunner(ModularRunner):
     '''
@@ -590,7 +602,7 @@ class DataRunner(ModularRunner):
             sample_id_map = {}
             samples = []
             for line in sample_sheet.get("Data"):
-                if line.get("Sample_ID") == '' and line.get("Sample_Name") == '':
+                if line.get("Sample_ID") == '' and line.get("Sample_Name", fallback='') == '':
                     continue
                 sample  = line.get("Sample_ID") 
                 if sample not in sample_id_map:
@@ -600,19 +612,19 @@ class DataRunner(ModularRunner):
         else:
             for sample_name in self.params.self.samples:
                 check_valid_samplename(sample_name)
-            return [SampleTuple(i,x) for (i,x) in enumerate(self.params.self.samples)]
+            return [SampleTuple(x,x) for x in self.params.self.samples]
 
     def type_map_match(self, fname):
         type_map = self.params.self.optional.type_map
-        for (raw_type, zippy_type) in type_map.iteritems():
+        for (raw_type, zippy_type) in type_map.items():
             if fname.endswith(raw_type):
                 return zippy_type
         return False
 
     def get_output(self, sample):
         output_map = {}
-        #print os.path.join(self.params.self.output_dir, '*')
-        #print glob.glob(os.path.join(self.params.self.output_dir, '*'))
+        print(os.path.join(self.params.self.output_dir, '*'))
+        print(glob.glob(os.path.join(self.params.self.output_dir, '*')))
         for fname in glob.glob(os.path.join(self.params.self.output_dir, '*')):
             sample_name = sample.name
             if sample_name in fname:
@@ -629,6 +641,7 @@ class DataRunner(ModularRunner):
                     output_map[file_type].append(fname)
                 else:
                     output_map[file_type] = fname
+        print(output_map)
         return output_map
 
     def get_dependencies(self, sample):

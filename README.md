@@ -7,6 +7,8 @@
 
 ZIPPY is a powerful, easy-to-use NGS pipeline prototyping system, with batteries included.  ZIPPY helps you create JSON-based pipeline specifications, which it then uses to execute a series of pipeline stages, with no user-written code required.
 
+## This is the personal updated ZIPPY repo of the original developer at Illumina
+
 ## With ZIPPY, you can:
 - Generate a new pipeline without any coding required
 - Auto-generate parameters files from just a list of stages
@@ -24,11 +26,11 @@ ZIPPY is a powerful, easy-to-use NGS pipeline prototyping system, with batteries
 There will be many more to come!  (See the full list of modules [here](https://github.com/Illumina/zippy/wiki/Zippy-modules)).
 
 ## Limitations:
-ZIPPY uses black magic that relies upon the CPython implementation of Python.  Currently, only CPython 2.7 is supported.  ZIPPY also requires several python modules.  To make life easier, an executable version of ZIPPY is available (see the releases page!).
+ZIPPY uses black magic that relies upon the CPython implementation of Python.  Currently, only CPython 3 is supported.  In particular, only python 3.6 has currently been tested.  ZIPPY also requires several python modules.  To make life easier, an executable version of ZIPPY is available (see the releases page!).
 
 ### Running ZIPPY from source
 If you would like to run ZIPPY from source, there are a couple of things to note.
-- You must use CPython 2.7
+- You must use CPython 3.x
 - You must install the modules 'commentjson' and 'pyflow' (note: pyflow is not in pypi, but can be found [here](https://github.com/Illumina/pyflow)).  You may optionally install the package 'meta' which may improve the coverage of parameters from make_params if you do not have the source of some of your imported modules (e.g., only .pyc files).
 - Run the tests file make_params_test.py and see if it's OK!
 
@@ -61,6 +63,13 @@ Yeah, that's really it.
 
 
 **More information is on the git wiki.**
+
+v3.0.0 (??)
+- Migration to python 3!
+- Bugfixes, including making CommandLineRunner work, and an error with blank names in the sample sheet
+
+v2.2.0 (??)
+- Rewrite of the samplesheet code.  The public interface is the same, but the underlying representation has changed.  The new approach supports sample sheets that do not have a sample name column.
 
 v2.1.3 (01/28/2019)
 - Improvements to RNA support (jsnedecor)
